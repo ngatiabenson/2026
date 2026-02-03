@@ -1,0 +1,5 @@
+.env
+.env.local
+uploads/
+CHANGES_SUMMARY.md
+node_modules

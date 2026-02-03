@@ -1,0 +1,16 @@
+# Cloudflare Images Configuration
+# Add these environment variables to your .env file
+
+# Cloudflare Account ID (found in your Cloudflare dashboard)
+CLOUDFLARE_ACCOUNT_ID=your_account_id_here
+
+# Cloudflare API Token (create one with Images:Edit permissions)
+CLOUDFLARE_API_TOKEN=your_api_token_here
+
+# Cloudflare Images Delivery URL (usually imagedelivery.net)
+CLOUDFLARE_DELIVERY_URL=https://imagedelivery.net
+
+# Optional: Default image URLs for fallbacks
+DEFAULT_AVATAR_URL=https://imagedelivery.net/default-avatar/public
+DEFAULT_PRODUCT_IMAGE_URL=https://imagedelivery.net/default-product/public
+
