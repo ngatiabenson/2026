@@ -835,40 +835,59 @@ const AccountPage = () => {
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {orders.map((order) => (
-                        <TableRow key={order.id} hover>
-                          <TableCell>
-                            <Button
-                              variant="text"
-                              color="primary"
-                              onClick={() => navigate(`/order-details/${order.id}`)}
-                              sx={{ textTransform: "none", padding: 0, minWidth: "auto" }}
-                            >
-                              {order.order_number}
-                            </Button>
-                          </TableCell>
-                          <TableCell>{format_date(order.created_at)}</TableCell>
-                          <TableCell>
-                            <Typography variant="body2">
-                              {order.items_count} item{order.items_count !== 1 ? "s" : ""}
-                            </Typography>
-                          </TableCell>
-                          <TableCell align="right">{format_currency(order.total_amount)}</TableCell>
-                          <TableCell align="center">
-                            <Chip
-                              label={order.status}
-                              color={get_status_color(order.status)}
-                              size="small"
-                              icon={get_status_icon(order.status)}
-                            />
-                          </TableCell>
-                          <TableCell align="center">
-                            <IconButton size="small" onClick={(e) => handle_order_menu_open(e, order)}>
-                              <MoreVert />
-                            </IconButton>
-                          </TableCell>
-                        </TableRow>
-                      ))}
+                      {orders.map((order) => {
+                        const items = order.items || []
+                        const itemCount = order.items_count ?? order.item_count ?? items.length
+                        const firstItemsLabel =
+                          items.length > 0
+                            ? items
+                                .slice(0, 2)
+                                .map((it) => it.product_name || it.productName)
+                                .filter(Boolean)
+                                .join(", ")
+                            : null
+
+                        return (
+                          <TableRow key={order.id} hover>
+                            <TableCell>
+                              <Button
+                                variant="text"
+                                color="primary"
+                                onClick={() => navigate(`/order-details/${order.id}`)}
+                                sx={{ textTransform: "none", padding: 0, minWidth: "auto" }}
+                              >
+                                {order.order_number}
+                              </Button>
+                            </TableCell>
+                            <TableCell>{format_date(order.created_at)}</TableCell>
+                            <TableCell>
+                              <Typography variant="body2">
+                                {itemCount} item{itemCount !== 1 ? "s" : ""}
+                              </Typography>
+                              {firstItemsLabel && (
+                                <Typography variant="caption" color="text.secondary" display="block">
+                                  {firstItemsLabel}
+                                  {items.length > 2 ? "..." : ""}
+                                </Typography>
+                              )}
+                            </TableCell>
+                            <TableCell align="right">{format_currency(order.total_amount)}</TableCell>
+                            <TableCell align="center">
+                              <Chip
+                                label={order.status}
+                                color={get_status_color(order.status)}
+                                size="small"
+                                icon={get_status_icon(order.status)}
+                              />
+                            </TableCell>
+                            <TableCell align="center">
+                              <IconButton size="small" onClick={(e) => handle_order_menu_open(e, order)}>
+                                <MoreVert />
+                              </IconButton>
+                            </TableCell>
+                          </TableRow>
+                        )
+                      })}
                     </TableBody>
                   </Table>
                 </TableContainer>

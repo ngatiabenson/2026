@@ -1,5 +1,5 @@
 import express from "express"
-import { query } from "../utils/database.js"
+import { query, transaction } from "../utils/database.js"
 import { authenticateToken, requireRole } from "../middleware/auth.js"
 import { absoluteImageUrl } from "../utils/url.js"
 import { debitWalletPending } from "../services/walletService.js"
@@ -7,6 +7,7 @@ import { allocateFromVirtualStock } from "../services/virtualStockService.js"
 import { groupItemsBySupplier, createPurchaseOrders, createAdminPoForVirtualConsumption } from "../services/poService.js"
 import { getCurrentBatchKey } from "../services/batchService.js"
 import { notifySupplierPo } from "../services/notificationsService.js"
+import { resolveTierUnitPrice, calculateLineTotals } from "../services/pricingService.js"
 
 const router = express.Router()
 
@@ -33,14 +34,34 @@ router.get("/my-orders", authenticateToken, async (req, res) => {
     const sortDirection = validSortOrders.includes(sort_order.toLowerCase()) ? sort_order.toUpperCase() : "DESC"
 
     const result = await query(
-      `SELECT o.id, o.order_number, o.total_amount, o.status, o.created_at,
-             COUNT(oi.id) as item_count
-      FROM orders o
-      LEFT JOIN order_items oi ON o.id = oi.order_id
-      ${whereClause}
-      GROUP BY o.id, o.order_number, o.total_amount, o.status, o.created_at
-      ORDER BY o.${sortColumn} ${sortDirection}
-      LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      `SELECT 
+         o.id,
+         o.order_number,
+         o.total_amount,
+         o.status,
+         o.created_at,
+         COALESCE(
+           jsonb_agg(
+             DISTINCT jsonb_build_object(
+               'id', oi.id,
+               'product_id', oi.product_id,
+               'product_name', p.name,
+               'quantity', oi.quantity,
+               'price', oi.price,
+               'total_price', oi.total_price,
+               'image_url', pi.image_url
+             )
+           ) FILTER (WHERE oi.id IS NOT NULL),
+           '[]'::jsonb
+         ) AS items
+       FROM orders o
+       LEFT JOIN order_items oi ON o.id = oi.order_id
+       LEFT JOIN products p ON oi.product_id = p.id
+       LEFT JOIN product_images pi ON p.id = pi.product_id AND pi.is_primary = true
+       ${whereClause}
+       GROUP BY o.id, o.order_number, o.total_amount, o.status, o.created_at
+       ORDER BY o.${sortColumn} ${sortDirection}
+       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, limit, offset],
     )
 
@@ -56,14 +77,19 @@ router.get("/my-orders", authenticateToken, async (req, res) => {
     res.json({
       success: true,
       data: {
-        data: result.rows.map((order) => ({
-          id: order.id,
-          order_number: order.order_number,
-          total_amount: Number.parseFloat(order.total_amount),
-          status: order.status,
-          item_count: Number.parseInt(order.item_count),
-          created_at: order.created_at,
-        })),
+        data: result.rows.map((order) => {
+          const items = Array.isArray(order.items) ? order.items : []
+          return {
+            id: order.id,
+            order_number: order.order_number,
+            total_amount: Number.parseFloat(order.total_amount),
+            status: order.status,
+            item_count: items.length,
+            items,
+            items_count: items.length, // alias for frontend compatibility
+            created_at: order.created_at,
+          }
+        }),
         pagination: {
           current_page: Number.parseInt(page),
           total_pages: totalPages,
@@ -176,16 +202,24 @@ router.get("/:id", authenticateToken, async (req, res) => {
 
     const order = orderResult.rows[0]
 
-    // Get order items
-    const itemsResult = await query(
-      `SELECT oi.*, p.name as product_name, pi.image_url
-      FROM order_items oi
-      JOIN products p ON oi.product_id = p.id
-      LEFT JOIN product_images pi ON p.id = pi.product_id AND pi.is_primary = true
-      WHERE oi.order_id = $1
-      ORDER BY oi.id`,
-      [id],
-    )
+    // Get order items - always return items array (empty if none found)
+    let itemsResult
+    try {
+      itemsResult = await query(
+        `SELECT oi.*, p.name as product_name, pi.image_url
+        FROM order_items oi
+        JOIN products p ON oi.product_id = p.id
+        LEFT JOIN product_images pi ON p.id = pi.product_id AND pi.is_primary = true
+        WHERE oi.order_id = $1
+        ORDER BY oi.id`,
+        [id],
+      )
+      console.log(`[ORDER_FETCH] Found ${itemsResult.rows.length} items for order ${id}`)
+    } catch (itemsError) {
+      console.error(`[ORDER_FETCH] Error fetching items for order ${id}:`, itemsError)
+      // Return empty items array instead of failing
+      itemsResult = { rows: [] }
+    }
 
     res.json({
       success: true,
@@ -219,124 +253,209 @@ router.get("/:id", authenticateToken, async (req, res) => {
 })
 
 // POST /api/orders - Create new order
-// POST /api/orders - Create new order
+// CRITICAL: This endpoint queries cart_items from DB and calculates all pricing server-side
 router.post("/", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id
-    const { items, shippingAddress, walletApplied = 0, cashback_total = 0 } = req.body
+    const { shippingAddress, walletApplied = 0 } = req.body
 
-    if (!items || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: "Order items are required" })
-    }
+    const { orderId, orderNumber, totalAmount, totalCashback, validatedItems } = await transaction(async (client) => {
+      // 1️⃣ Query cart_items from database (single source of truth)
+      const cartItemsRes = await client.query(
+        `SELECT ci.id as cart_item_id, ci.product_id, ci.quantity,
+                p.price, p.cost_price, p.vat_rate, p.cashback_rate, p.is_active,
+                array_agg(
+                  jsonb_build_object(
+                    'min_quantity', ppt.min_quantity,
+                    'max_quantity', ppt.max_quantity,
+                    'selling_price', ppt.selling_price
+                  ) ORDER BY ppt.min_quantity ASC
+                ) FILTER (WHERE ppt.id IS NOT NULL) as pricing_tiers
+         FROM cart_items ci
+         JOIN products p ON ci.product_id = p.id
+         LEFT JOIN product_pricing_tiers ppt ON p.id = ppt.product_id
+         WHERE ci.user_id = $1 AND p.is_active = true
+         GROUP BY ci.id, ci.product_id, ci.quantity, p.price, p.cost_price, p.vat_rate, p.cashback_rate, p.is_active
+         ORDER BY ci.created_at`,
+        [userId],
+      )
 
-    // Start transaction
-    await query("BEGIN")
+      if (!cartItemsRes.rows.length) {
+        throw new Error("Cart is empty")
+      }
 
-    try {
-      // 1️⃣ Validate items & calculate total
-      let totalAmount = 0
+      // 2️⃣ Calculate pricing, VAT, and cashback server-side for each item
+      let totalAmountLocal = 0
+      let totalCashbackLocal = 0
       const validatedItems = []
 
-      for (const item of items) {
-        const productRes = await query(
-          "SELECT id, name, price FROM products WHERE id = $1 AND is_active = true",
-          [item.productId]
-        )
-        if (!productRes.rows.length) throw new Error(`Product ${item.productId} not found`)
-        const product = productRes.rows[0]
-        const itemTotal = Number.parseFloat(product.price) * item.quantity
-        totalAmount += itemTotal
+      for (const cartItem of cartItemsRes.rows) {
+        const productId = cartItem.product_id
+        const quantity = Number.parseInt(cartItem.quantity) || 1
+
+        const basePrice = Number.parseFloat(cartItem.price ?? cartItem.cost_price ?? 0)
+        const pricingTiers = cartItem.pricing_tiers || []
+        const unitPrice = resolveTierUnitPrice({ basePrice, pricingTiers, quantity })
+
+        const vatRatePercent = Number.parseFloat(cartItem.vat_rate ?? 0)
+        const cashbackRatePercent = Number.parseFloat(cartItem.cashback_rate ?? 0)
+        const line = calculateLineTotals({
+          unitPrice,
+          quantity,
+          vatRatePercent,
+          cashbackRatePercent,
+        })
+
+        totalAmountLocal += line.lineTotal
+        totalCashbackLocal += line.lineCashbackAmount
+
         validatedItems.push({
-          productId: product.id,
-          quantity: item.quantity,
-          price: product.price,
+          productId,
+          quantity,
+          unitPrice: line.unitPrice,
+          subtotalExclVAT: line.lineSubtotalExclVAT,
+          vatAmount: line.lineVatAmount,
+          subtotalInclVAT: line.lineTotal,
+          cashbackAmount: line.lineCashbackAmount,
         })
       }
 
-      // 2️⃣ Generate order number
-      const orderNumber = `ORD-${Date.now()}-${userId}`
+      // 3️⃣ Generate order number
+      const newOrderNumber = `ORD-${Date.now()}-${userId}`
 
-      // 3️⃣ Insert order
-      const orderRes = await query(
+      // 4️⃣ Insert order with server-calculated cashback
+      const orderRes = await client.query(
         "INSERT INTO orders (user_id, order_number, total_amount, status, shipping_address_id, cashback_total) VALUES ($1, $2, $3, 'pending', $4, $5) RETURNING id",
-        [userId, orderNumber, totalAmount, shippingAddress || null, cashback_total]
+        [userId, newOrderNumber, totalAmountLocal, shippingAddress || null, totalCashbackLocal],
       )
-      const orderId = orderRes.rows[0].id
+      const newOrderId = orderRes.rows[0].id
 
-      // 4️⃣ Debit wallet if applicable
+      // 5️⃣ Debit wallet if applicable
       if (walletApplied > 0) {
-        await debitWalletPending(userId, walletApplied, `Order ${orderNumber} wallet usage (pending)`)
+        await debitWalletPending(userId, walletApplied, `Order ${newOrderNumber} wallet usage (pending)`)
       }
 
-    // 5️⃣ Insert order_items first
-for (const item of validatedItems) {
-  const totalPrice = Number.parseFloat(item.price) * item.quantity
-  const insertRes = await query(
-    "INSERT INTO order_items (order_id, product_id, quantity, price, total_price) VALUES ($1, $2, $3, $4, $5) RETURNING id",
-    [orderId, item.productId, item.quantity, item.price, totalPrice]
-  )
-  console.log("Inserted order_item:", insertRes.rows[0])
-}
-
-// 6️⃣ Now allocate virtual stock
-const basicItems = validatedItems.map((i) => ({ productId: i.productId, quantity: i.quantity }))
-const alloc = await allocateFromVirtualStock({ query }, orderId, basicItems)
-
-
-      //  Generate POs (admin & supplier)
-      const batchKey = getCurrentBatchKey()
-      if (alloc.adminPoItems.length) {
-        const adminPo = await createAdminPoForVirtualConsumption({ query }, alloc.adminPoItems, batchKey)
-        if (adminPo?.id) await notifySupplierPo({ query }, adminPo.id)
+      // 6️⃣ Insert order_items with server-calculated prices - CRITICAL: Must succeed before any downstream operations
+      const insertedOrderItems = []
+      for (const item of validatedItems) {
+        try {
+          const insertRes = await client.query(
+            "INSERT INTO order_items (order_id, product_id, quantity, price, total_price) VALUES ($1, $2, $3, $4, $5) RETURNING id",
+            [newOrderId, item.productId, item.quantity, item.unitPrice, item.subtotalInclVAT],
+          )
+          insertedOrderItems.push(insertRes.rows[0])
+          console.log(
+            `[ORDER_ITEMS] Successfully inserted order_item for order ${newOrderId}, product ${item.productId}, qty ${item.quantity}, price ${item.unitPrice}, total ${item.subtotalInclVAT}`,
+          )
+        } catch (itemError) {
+          console.error(
+            `[ORDER_ITEMS] FAILED to insert order_item for order ${newOrderId}, product ${item.productId}:`,
+            itemError,
+          )
+          throw new Error(`Failed to insert order item for product ${item.productId}: ${itemError.message}`)
+        }
       }
-      if (alloc.remainingForSupplier.length) {
-        const grouped = await groupItemsBySupplier({ query }, alloc.remainingForSupplier)
-        const supplierPos = await createPurchaseOrders({ query }, grouped, batchKey)
-        for (const po of supplierPos) await notifySupplierPo({ query }, po.id)
+
+      if (insertedOrderItems.length === 0) {
+        throw new Error("No order items were inserted")
       }
+
+      console.log(
+        `[ORDER_ITEMS] Successfully inserted ${insertedOrderItems.length} order_items for order ${newOrderId}`,
+      )
 
       // 7️⃣ Clear cart
-      await query("DELETE FROM cart_items WHERE user_id = $1", [userId])
+      await client.query("DELETE FROM cart_items WHERE user_id = $1", [userId])
 
-      // 8️⃣ Insert pending cashback (credited after refund window)
-      if (cashback_total > 0) {
-        await query(
+      // 8️⃣ Insert pending cashback (credited after refund window) - use server-calculated total
+      if (totalCashbackLocal > 0) {
+        await client.query(
           "INSERT INTO wallet_transactions (user_id, transaction_type, amount, description, status) VALUES ($1, 'cashback', $2, $3, 'pending')",
-          [userId, cashback_total, `Cashback from order ${orderNumber} (pending return window)`]
+          [userId, totalCashbackLocal, `Cashback from order ${newOrderNumber} (pending return window)`],
         )
       }
 
       // 9️⃣ Delay sales agent commission to same time as cashback
-      const customerRes = await query(
+      const customerRes = await client.query(
         "SELECT sales_agent_id FROM customer_assignments WHERE customer_id = $1 AND is_active = true ORDER BY assigned_at DESC LIMIT 1",
-        [userId]
+        [userId],
       )
       const salesAgentId = customerRes.rows?.[0]?.sales_agent_id || null
-      if (salesAgentId && cashback_total > 0) {
-        const orderCountRes = await query("SELECT COUNT(*) as order_count FROM orders WHERE user_id = $1", [userId])
+      if (salesAgentId && totalCashbackLocal > 0) {
+        const orderCountRes = await client.query("SELECT COUNT(*) as order_count FROM orders WHERE user_id = $1", [
+          userId,
+        ])
         const orderCount = Number.parseInt(orderCountRes.rows[0].order_count)
         if (orderCount <= 3) {
           const commissionRate = 5.0
-          const commissionAmount = (totalAmount * commissionRate) / 100
-          await query(
+          const commissionAmount = (totalAmountLocal * commissionRate) / 100
+          await client.query(
             "INSERT INTO commissions (sales_agent_id, order_id, commission_rate, commission_amount, status) VALUES ($1, $2, $3, $4, 'pending')",
-            [salesAgentId, orderId, commissionRate, commissionAmount]
+            [salesAgentId, newOrderId, commissionRate, commissionAmount],
           )
         }
       }
 
-      // 10️⃣ Commit transaction
-      await query("COMMIT")
+      return {
+        orderId: newOrderId,
+        orderNumber: newOrderNumber,
+        totalAmount: totalAmountLocal,
+        totalCashback: totalCashbackLocal,
+        validatedItems,
+      }
+    })
 
-      res.status(201).json({
-        success: true,
-        order: { id: orderId, orderNumber, totalAmount, status: "pending" },
-        message: "Order created successfully",
-      })
-    } catch (error) {
-      await query("ROLLBACK")
-      throw error
+    // 10️⃣ Downstream operations (virtual stock, POs, notifications) - run after core transaction
+    let alloc = { consumed: [], remainingForSupplier: [], adminPoItems: [] }
+    try {
+      const basicItems = validatedItems.map((i) => ({ productId: i.productId, quantity: i.quantity }))
+      // Use global query for downstream operations (non-critical for order persistence)
+      alloc = await allocateFromVirtualStock({ query }, orderId, basicItems)
+    } catch (allocError) {
+      console.error(
+        `[VIRTUAL_STOCK] Failed to allocate virtual stock for order ${orderId}, continuing anyway:`,
+        allocError,
+      )
     }
+
+    try {
+      const batchKey = getCurrentBatchKey()
+      if (alloc.adminPoItems && alloc.adminPoItems.length) {
+        const adminPo = await createAdminPoForVirtualConsumption({ query }, alloc.adminPoItems, batchKey)
+        if (adminPo?.id) {
+          try {
+            await notifySupplierPo({ query }, adminPo.id)
+          } catch (notifyError) {
+            console.error(
+              `[NOTIFICATIONS] Failed to notify supplier for admin PO ${adminPo.id}:`,
+              notifyError,
+            )
+          }
+        }
+      }
+      if (alloc.remainingForSupplier && alloc.remainingForSupplier.length) {
+        const grouped = await groupItemsBySupplier({ query }, alloc.remainingForSupplier)
+        const supplierPos = await createPurchaseOrders({ query }, grouped, batchKey)
+        for (const po of supplierPos) {
+          try {
+            await notifySupplierPo({ query }, po.id)
+          } catch (notifyError) {
+            console.error(`[NOTIFICATIONS] Failed to notify supplier for PO ${po.id}:`, notifyError)
+          }
+        }
+      }
+    } catch (poError) {
+      console.error(
+        `[PO_CREATION] Failed to create purchase orders for order ${orderId}, continuing anyway:`,
+        poError,
+      )
+    }
+
+    res.status(201).json({
+      success: true,
+      order: { id: orderId, orderNumber, totalAmount, status: "pending" },
+      message: "Order created successfully",
+    })
   } catch (error) {
     console.error("Order creation error:", error)
     res.status(500).json({ error: error.message || "Internal server error" })

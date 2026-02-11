@@ -1005,13 +1005,23 @@ router.delete("/:id", requireRole(["admin"]), async (req, res) => {
       return res.status(404).json({ error: "Product not found" })
     }
 
-    // Delete product images first
+    // Check if product is referenced in order_items (keep FK constraints intact)
+    const usageResult = await query("SELECT COUNT(*) AS count FROM order_items WHERE product_id = $1", [id])
+    const usageCount = Number.parseInt(usageResult.rows[0]?.count || 0)
+
+    if (usageCount > 0) {
+      // Soft delete: deactivate product but keep historical order data
+      await query("UPDATE products SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE id = $1", [id])
+
+      return res.json({
+        success: true,
+        message: "Product has existing orders and was deactivated instead of deleted.",
+      })
+    }
+
+    // Safe to hard delete when there are no related order_items
     await query("DELETE FROM product_images WHERE product_id = $1", [id])
-
-    // Delete pricing tiers
     await query("DELETE FROM product_pricing_tiers WHERE product_id = $1", [id])
-
-    // Delete product
     await query("DELETE FROM products WHERE id = $1", [id])
 
     res.json({

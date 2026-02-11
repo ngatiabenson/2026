@@ -127,11 +127,45 @@ const NewItemForm = ({ editItem, onSave, onCancel, onRefresh }) => {
   useEffect(() => {
     if (editItem) {
       setIsEditMode(true)
-      setFormData({
-        ...editItem,
-        imagePreview: editItem.imageUrl || editItem.image || null,
-        imageUrl: editItem.imageUrl || "",
-      })
+    const existingImages = (editItem.productImages || editItem.images || []).map((img, index) => ({
+      id: img.id || `existing-${index}`,
+      image_url: img.image_url || img.imageUrl || img.url || editItem.imageUrl || editItem.image_url || null,
+      is_primary: img.is_primary || img.isPrimary || index === 0,
+      preview: null,
+    }))
+
+    setFormData((prev) => ({
+      ...prev,
+      productName: editItem.name || editItem.product_name || prev.productName,
+      productCode: editItem.item_code || editItem.product_code || prev.productCode,
+      description: editItem.description || prev.description,
+      longerDescription: editItem.longerDescription || editItem.longer_description || prev.longerDescription,
+      category: editItem.categoryName || editItem.category?.name || prev.category,
+      subCategory: editItem.subcategoryName || editItem.subcategory?.name || prev.subCategory,
+      costPrice:
+        editItem.costPrice !== undefined && editItem.costPrice !== null
+          ? editItem.costPrice
+          : editItem.cost_price !== undefined && editItem.cost_price !== null
+            ? editItem.cost_price
+            : prev.costPrice,
+      vat:
+        editItem.vatRate !== undefined && editItem.vatRate !== null
+          ? String(editItem.vatRate)
+          : editItem.vat_rate !== undefined && editItem.vat_rate !== null
+            ? String(editItem.vat_rate)
+            : prev.vat,
+      cashbackRate:
+        editItem.cashbackRate !== undefined && editItem.cashbackRate !== null
+          ? String(editItem.cashbackRate)
+          : editItem.cashback_rate !== undefined && editItem.cashback_rate !== null
+            ? String(editItem.cashback_rate)
+            : prev.cashbackRate,
+      class: editItem.class || editItem.shippingClass || prev.class,
+      images: existingImages.length > 0 ? existingImages : prev.images || [],
+      imagePreview:
+        existingImages[0]?.image_url || editItem.imageUrl || editItem.image || prev.imagePreview || null,
+      imageUrl: existingImages[0]?.image_url || editItem.imageUrl || prev.imageUrl || "",
+    }))
     }
   }, [editItem])
 
