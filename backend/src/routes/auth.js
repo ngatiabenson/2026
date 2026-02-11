@@ -227,7 +227,7 @@ router.post("/register", async (req, res) => {
       const user = result.rows[0]
 
       // Create wallet for new user
-      await query("INSERT INTO user_wallets (user_id, balance) VALUES ($1, 0.00)", [user.id])
+      await query("INSERT INTO wallets (user_id, balance) VALUES ($1, 0.00)", [user.id])
 
       if (salesAgentId && registrationType === "agent") {
         await query(

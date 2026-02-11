@@ -959,11 +959,11 @@ const NavigationBar = ({ isLoggedIn, currentUser, onLogout, isAdminPage }) => {
             </Typography>
             <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}>
               <PhoneIcon fontSize="small" color="primary" />
-              <Typography variant="body2">+254 722517263</Typography>
+              <Typography variant="body2">+254 707501094</Typography>
             </Box>
             <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
               <MailIcon fontSize="small" color="primary" />
-              <Typography variant="body2">info@firstcraft.com</Typography>
+              <Typography variant="body2">mukuhabenson@gmail.com</Typography>
             </Box>
           </Box>
         </Box>
