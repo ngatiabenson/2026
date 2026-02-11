@@ -29,8 +29,14 @@ export const normalizeCartItem = (cartItem) => {
     description: product.description || '',
     shortDescription: (product.description || '').substring(0, 100) + (product.description?.length > 100 ? '...' : ''),
     longerDescription: product.description || '',
-    // Normalize price fields
-    price: Number.parseFloat(product.price || 0),
+    // Pricing (authoritative values are provided by backend /cart)
+    price: Number.parseFloat(cartItem.unit_price ?? product.price ?? 0),
+    unitPrice: Number.parseFloat(cartItem.unit_price ?? product.price ?? 0),
+    lineTotal: Number.parseFloat(cartItem.line_total ?? 0),
+    lineSubtotalExclVAT: Number.parseFloat(cartItem.line_subtotal_excl_vat ?? 0),
+    lineVatAmount: Number.parseFloat(cartItem.line_vat_amount ?? 0),
+    lineCashbackAmount: Number.parseFloat(cartItem.line_cashback_amount ?? 0),
+    // legacy fields (keep, but do not compute pricing client-side)
     basePrice: Number.parseFloat(product.costPrice || product.cost_price || product.price || 0),
     costPrice: Number.parseFloat(product.costPrice || product.cost_price || product.price || 0),
     // Normalize item code fields
@@ -45,7 +51,7 @@ export const normalizeCartItem = (cartItem) => {
     imageUrl: getImageUrl(product.imageUrl || product.primaryImage || product.image_url),
     // Other fields
     quantity: Number.parseInt(cartItem.quantity || 1),
-    vatRate: Number.parseFloat(product.vatRate || product.vat_rate || 16),
+    vatRate: Number.parseFloat(product.vatRate || product.vat_rate || 0),
     class: product.class || 'Standard',
     category: product.category || { name: 'Uncategorized', slug: '' },
     subcategory: product.subcategory || null,

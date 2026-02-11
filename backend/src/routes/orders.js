@@ -126,12 +126,29 @@ router.get("/", authenticateToken, async (req, res) => {
     }
 
     const result = await query(
-      `SELECT o.id, o.order_number, o.total_amount, o.status, o.created_at,
-             u.name as customer_name, u.email as customer_email,
-             COUNT(oi.id) as item_count
+      `SELECT 
+         o.id,
+         o.order_number,
+         o.total_amount,
+         o.status,
+         o.created_at,
+         u.name as customer_name,
+         u.email as customer_email,
+         COALESCE(
+           jsonb_agg(
+             DISTINCT jsonb_build_object(
+               'product_id', oi.product_id,
+               'name', p.name,
+               'quantity', oi.quantity,
+               'price', oi.price
+             )
+           ) FILTER (WHERE oi.id IS NOT NULL),
+           '[]'::jsonb
+         ) AS items
       FROM orders o
       JOIN users u ON o.user_id = u.id
       LEFT JOIN order_items oi ON o.id = oi.order_id
+      LEFT JOIN products p ON oi.product_id = p.id
       ${whereClause}
       GROUP BY o.id, o.order_number, o.total_amount, o.status, o.created_at, u.name, u.email
       ORDER BY o.created_at DESC
@@ -150,16 +167,20 @@ router.get("/", authenticateToken, async (req, res) => {
 
     res.json({
       success: true,
-      orders: result.rows.map((order) => ({
-        id: order.id,
-        orderNumber: order.order_number,
-        totalAmount: Number.parseFloat(order.total_amount),
-        status: order.status,
-        customerName: order.customer_name,
-        customerEmail: order.customer_email,
-        itemCount: Number.parseInt(order.item_count),
-        createdAt: order.created_at,
-      })),
+      orders: result.rows.map((order) => {
+        const items = Array.isArray(order.items) ? order.items : []
+        return {
+          id: order.id,
+          orderNumber: order.order_number,
+          totalAmount: Number.parseFloat(order.total_amount),
+          status: order.status,
+          customerName: order.customer_name,
+          customerEmail: order.customer_email,
+          itemCount: items.length,
+          items,
+          createdAt: order.created_at,
+        }
+      }),
       pagination: {
         page: Number.parseInt(page),
         limit: Number.parseInt(limit),

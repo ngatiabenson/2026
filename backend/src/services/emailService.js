@@ -1,3 +1,289 @@
+/*resend email for render*/
+import dotenv from "dotenv"
+const envFile =
+  process.env.NODE_ENV === "production"
+    ? ".env.production"
+    : ".env.local"
+dotenv.config({ path: envFile })
+
+import nodemailer from "nodemailer"
+import { Resend } from "resend"
+import { v4 as uuidv4 } from "uuid"
+import { query } from "../utils/database.js"
+
+class EmailService {
+  constructor() {
+    this.transporter = null
+    this.resend = null
+    this.isProduction = process.env.NODE_ENV === "production"
+
+    if (this.isProduction && process.env.RESEND_API_KEY) {
+      console.log("Using Resend (production email service)")
+      this.resend = new Resend(process.env.RESEND_API_KEY)
+    } else {
+      this.initializeTransporter()
+    }
+  }
+
+  initializeTransporter() {
+    console.log("Using SMTP config:", {
+      host: process.env.SMTP_HOST,
+      port: process.env.SMTP_PORT,
+      secure: true,
+      user: process.env.SMTP_USER,
+    })
+
+    try {
+      this.transporter = nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port: process.env.SMTP_PORT,
+        secure: true,
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS,
+        },
+      })
+
+      this.transporter.verify((error) => {
+        if (error) {
+          console.error("SMTP configuration error:", error)
+        } else {
+          console.log("SMTP ready for local development")
+        }
+      })
+    } catch (error) {
+      console.error("Failed to initialize SMTP:", error)
+    }
+  }
+
+  async sendEmail(to, subject, html, text = null) {
+    const fromAddress =
+      process.env.SMTP_FROM || "info@tambuaphish.store"
+
+    try {
+      // 🚀 Production → Resend
+      if (this.isProduction && this.resend) {
+        const response = await this.resend.emails.send({
+          from: fromAddress,
+          to,
+          subject,
+          html,
+        })
+
+        console.log("Email sent via Resend:", response?.id)
+        return response
+      }
+
+      // 🛠 Local → SMTP
+      if (!this.transporter) {
+        throw new Error("Email service not initialized")
+      }
+
+      const result = await this.transporter.sendMail({
+        from: fromAddress,
+        to,
+        subject,
+        html,
+        text: text || this.htmlToText(html),
+      })
+
+      console.log("Email sent via SMTP:", result.messageId)
+      return result
+    } catch (error) {
+      console.error("Failed to send email:", error)
+      throw error
+    }
+  }
+
+  htmlToText(html) {
+    return html
+      .replace(/<[^>]*>/g, "")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .trim()
+  }
+
+  async generateVerificationToken(userId) {
+    const token = uuidv4()
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
+
+    await query(
+      "INSERT INTO email_verification_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)",
+      [userId, token, expiresAt]
+    )
+
+    return token
+  }
+
+  async generatePasswordResetToken(userId) {
+    const token = uuidv4()
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000)
+
+    await query(
+      "INSERT INTO password_reset_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)",
+      [userId, token, expiresAt]
+    )
+
+    return token
+  }
+
+  async verifyToken(token, type = "verification") {
+    const tableName =
+      type === "verification"
+        ? "email_verification_tokens"
+        : "password_reset_tokens"
+
+    const result = await query(
+      `SELECT user_id, expires_at FROM ${tableName}
+       WHERE token = $1 AND expires_at > NOW() AND used_at IS NULL`,
+      [token]
+    )
+
+    return result.rows.length ? result.rows[0] : null
+  }
+
+  async markTokenAsUsed(token, type = "verification") {
+    const tableName =
+      type === "verification"
+        ? "email_verification_tokens"
+        : "password_reset_tokens"
+
+    await query(
+      `UPDATE ${tableName} SET used_at = NOW() WHERE token = $1`,
+      [token]
+    )
+  }
+
+  async sendVerificationEmail(userId, email, name) {
+    const token = await this.generateVerificationToken(userId)
+    const verificationUrl = `${
+      process.env.FRONTEND_URL || "http://localhost:5173"
+    }/verify-email?token=${token}`
+
+    const html = `
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Verify Your Email</title>
+</head>
+<body style="font-family: Arial, sans-serif;">
+<h2>Hello ${name},</h2>
+<p>Thank you for registering with FirstCraft.</p>
+<p><a href="${verificationUrl}">Verify Email Address</a></p>
+<p>If the link doesn't work, copy and paste:</p>
+<p>${verificationUrl}</p>
+<p>This link expires in 24 hours.</p>
+</body>
+</html>`
+
+    await this.sendEmail(
+      email,
+      "Verify Your Email Address - FirstCraft",
+      html
+    )
+
+    return token
+  }
+
+  async sendPasswordResetEmail(userId, email, name) {
+    const token = await this.generatePasswordResetToken(userId)
+    const resetUrl = `${
+      process.env.FRONTEND_URL || "http://localhost:5173"
+    }/reset-password?token=${token}`
+
+    const html = `
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Password Reset</title>
+</head>
+<body style="font-family: Arial, sans-serif;">
+<h2>Hello ${name},</h2>
+<p>Click below to reset your password:</p>
+<p><a href="${resetUrl}">Reset Password</a></p>
+<p>This link expires in 1 hour.</p>
+</body>
+</html>`
+
+    await this.sendEmail(
+      email,
+      "Reset Your Password - FirstCraft",
+      html
+    )
+
+    return token
+  }
+
+  async sendOrderConfirmationEmail(email, name, orderData) {
+    const html = `
+<!DOCTYPE html>
+<html>
+<body style="font-family: Arial, sans-serif;">
+<h2>Hello ${name},</h2>
+<p>Your order has been confirmed.</p>
+<p><strong>Order:</strong> ${orderData.orderNumber}</p>
+<p><strong>Total:</strong> $${orderData.totalAmount}</p>
+<p><strong>Status:</strong> ${orderData.status}</p>
+</body>
+</html>`
+
+    await this.sendEmail(
+      email,
+      `Order Confirmation - ${orderData.orderNumber}`,
+      html
+    )
+  }
+
+  async sendOrderStatusUpdateEmail(email, name, orderData) {
+    const html = `
+<!DOCTYPE html>
+<html>
+<body style="font-family: Arial, sans-serif;">
+<h2>Hello ${name},</h2>
+<p>Your order status is now: ${orderData.status}</p>
+<p><strong>Order:</strong> ${orderData.orderNumber}</p>
+</body>
+</html>`
+
+    await this.sendEmail(
+      email,
+      `Order Update - ${orderData.orderNumber}`,
+      html
+    )
+  }
+
+  async sendWalletNotificationEmail(email, name, transactionData) {
+    const html = `
+<!DOCTYPE html>
+<html>
+<body style="font-family: Arial, sans-serif;">
+<h2>Hello ${name},</h2>
+<p>Your wallet has a new transaction.</p>
+<p><strong>Type:</strong> ${transactionData.type}</p>
+<p><strong>Amount:</strong> $${transactionData.amount}</p>
+</body>
+</html>`
+
+    await this.sendEmail(
+      email,
+      "Wallet Transaction - FirstCraft",
+      html
+    )
+  }
+}
+
+export default new EmailService()
+
+
+
+/*
+/nodemailer & smtp local development
 import dotenv from 'dotenv'
 const envFile = process.env.NODE_ENV === "production" ? ".env.production" : ".env.local"
 dotenv.config({ path: envFile })
@@ -431,3 +717,4 @@ class EmailService {
 }
 
 export default new EmailService()
+*/

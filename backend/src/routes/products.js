@@ -822,6 +822,7 @@ router.put("/:id", requireRole(["admin"]), async (req, res) => {
     const { id } = req.params
     const {
       product_name,
+      product_code,
       description,
       longer_description,
       category_name,
@@ -836,6 +837,30 @@ router.put("/:id", requireRole(["admin"]), async (req, res) => {
     } = req.body
 
     const result = await transaction(async (client) => {
+      // Ensure product exists and get current product_code
+      const existingProductRes = await client.query("SELECT product_code FROM products WHERE id = $1", [id])
+      if (existingProductRes.rows.length === 0) {
+        throw new Error("Product not found")
+      }
+      const existingProductCode = existingProductRes.rows[0].product_code
+
+      // Handle optional product_code updates with uniqueness check
+      let newProductCode = product_code ? product_code.trim() : null
+      if (newProductCode && newProductCode !== existingProductCode) {
+        const codeCheck = await client.query(
+          "SELECT id FROM products WHERE product_code = $1 AND id <> $2",
+          [newProductCode, id],
+        )
+        if (codeCheck.rows.length > 0) {
+          const err = new Error("Product code already exists")
+          err.code = "DUPLICATE_PRODUCT_CODE"
+          throw err
+        }
+      } else {
+        // If unchanged or not provided, let the UPDATE keep the existing value
+        newProductCode = null
+      }
+
       // Find category if category_name is provided
       let categoryId = null
       if (category_name) {
@@ -868,10 +893,11 @@ router.put("/:id", requireRole(["admin"]), async (req, res) => {
              cost_price = COALESCE($6, cost_price),
              vat_rate = COALESCE($7, vat_rate),
              cashback_rate = COALESCE($8, cashback_rate),
-             image_url = COALESCE($9, image_url),
-             is_active = COALESCE($10, is_active),
+             product_code = COALESCE($9, product_code),
+             image_url = COALESCE($10, image_url),
+             is_active = COALESCE($11, is_active),
              updated_at = CURRENT_TIMESTAMP
-         WHERE id = $11 
+         WHERE id = $12 
          RETURNING *`,
         [
           product_name,
@@ -882,6 +908,7 @@ router.put("/:id", requireRole(["admin"]), async (req, res) => {
           cost_price,
           vat_rate,
           cashback_rate,
+          newProductCode,
           image_url,
           is_active,
           id,
@@ -988,6 +1015,8 @@ router.put("/:id", requireRole(["admin"]), async (req, res) => {
       res.status(404).json({ error: error.message })
     } else if (error.message === "Product not found") {
       res.status(404).json({ error: error.message })
+    } else if (error.message === "Product code already exists" || error.code === "DUPLICATE_PRODUCT_CODE") {
+      res.status(400).json({ error: "Product code already exists" })
     } else {
       res.status(500).json({ error: "Internal server error" })
     }

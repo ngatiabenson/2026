@@ -26,7 +26,7 @@ import {
   Chip,
 } from "@mui/material"
 import { ExpandMore, Save, Clear, PhotoCamera, Delete as DeleteIcon, Star as StarIcon } from "@mui/icons-material"
-import { uploadAPI } from "../../services/interceptor.js"
+import api, { uploadAPI } from "../../services/interceptor.js"
 import { categoriesAPI } from "../../services/interceptor.js"
 import { adminAPI } from "../../services/interceptor.js"
 
@@ -691,46 +691,53 @@ const NewItemForm = ({ editItem, onSave, onCancel, onRefresh }) => {
 
       console.log("[v0] Final submit data:", submitData)
 
-      const response = await adminAPI.createProduct(submitData)
+      const isUpdate = isEditMode && editItem && editItem.id
+      const response = isUpdate
+        ? await api.put(`/products/${editItem.id}`, submitData)
+        : await adminAPI.createProduct(submitData)
 
-      console.log("[v0] Product creation response:", response)
+      console.log("[v0] Product save response:", response)
 
       if (response.data && response.data.success) {
         setNotification({
           open: true,
-          message: response.data.message || "Product created successfully!",
+          message:
+            response.data.message ||
+            (isUpdate ? "Product updated successfully!" : "Product created successfully!"),
           severity: "success",
         })
 
-        // Reset form
-        setFormData({
-          productName: "",
-          productCode: "",
-          description: "",
-          longerDescription: "",
-          category: "",
-          subCategory: "",
-          costPrice: "",
-          vat: "16",
-          cashbackRate: "0",
-          productBarcode: "",
-          etimsRefCode: "",
-          expiryDate: "",
-          class: "Standard",
-          qty1Min: "1",
-          qty1Max: "3",
-          sellingPrice1: "",
-          qty2Min: "4",
-          qty2Max: "11",
-          sellingPrice2: "",
-          qty3Min: "12",
-          qty3Max: "999",
-          sellingPrice3: "",
-          images: [],
-          image: null,
-          imagePreview: null,
-          imageUrl: "",
-        })
+        // For new products, reset form. For edits, keep values so admin can continue reviewing.
+        if (!isUpdate) {
+          setFormData({
+            productName: "",
+            productCode: "",
+            description: "",
+            longerDescription: "",
+            category: "",
+            subCategory: "",
+            costPrice: "",
+            vat: "16",
+            cashbackRate: "0",
+            productBarcode: "",
+            etimsRefCode: "",
+            expiryDate: "",
+            class: "Standard",
+            qty1Min: "1",
+            qty1Max: "3",
+            sellingPrice1: "",
+            qty2Min: "4",
+            qty2Max: "11",
+            sellingPrice2: "",
+            qty3Min: "12",
+            qty3Max: "999",
+            sellingPrice3: "",
+            images: [],
+            image: null,
+            imagePreview: null,
+            imageUrl: "",
+          })
+        }
 
         if (onRefresh) {
           onRefresh()
@@ -740,17 +747,18 @@ const NewItemForm = ({ editItem, onSave, onCancel, onRefresh }) => {
           onSave(response.data.data)
         }
       } else {
-        console.error("[v0] Product creation failed:", response)
+        console.error("[v0] Product save failed:", response)
         setNotification({
           open: true,
-          message: response.data?.error || "Failed to create product",
+          message:
+            response.data?.error || (isUpdate ? "Failed to update product" : "Failed to create product"),
           severity: "error",
         })
       }
     } catch (error) {
-      console.error("[v0] Product creation error:", error)
+      console.error("[v0] Product save error:", error)
 
-      let errorMessage = "Failed to create product"
+      let errorMessage = isEditMode ? "Failed to update product" : "Failed to create product"
       if (error.response?.status === 403) {
         errorMessage = "Access denied. Please ensure you're logged in as an admin."
       } else if (error.response?.status === 401) {

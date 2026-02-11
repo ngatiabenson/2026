@@ -37,17 +37,10 @@ const upload = multer({
         return cb(new Error("Only image files are allowed"))
       }
 
-      const allowedMimeTypes = ["image/jpeg", "image/png", "image/webp", "image/gif", "image/jpg"]
-      const allowedExtensions = [".jpeg", ".jpg", ".png", ".webp", ".gif"]
-
+      const allowedMimeTypes = ["image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp"]
       const mimetype = (file.mimetype || "").toLowerCase()
-      const extname = path.extname((file.originalname || "").toLowerCase())
 
-      const isMimeAllowed =
-        (mimetype && allowedMimeTypes.includes(mimetype)) || (mimetype && mimetype.startsWith("image/"))
-      const isExtAllowed = allowedExtensions.includes(extname)
-
-      if (isMimeAllowed && isExtAllowed) {
+      if (allowedMimeTypes.includes(mimetype)) {
         return cb(null, true)
       }
 

@@ -1,7 +1,7 @@
 // src/pages/Checkout.jsx
 "use client"
 
-import React, { useState, useEffect, useMemo } from "react"
+import React, { useState, useEffect } from "react"
 import { useNavigate } from "react-router-dom"
 import api from "../../../services/interceptor"
 import NotificationSnackbar from "../../../components/common/NotificationSnackbar"
@@ -46,6 +46,7 @@ export default function Checkout() {
   const [loading, setLoading] = useState(true)
   const [activeStep, setActiveStep] = useState(0)
   const [cartItems, setCartItems] = useState([])
+  const [cartTotals, setCartTotals] = useState({ subtotal_excl_vat: 0, vat_amount: 0, total: 0, cashback_total: 0 })
   const [orderComplete, setOrderComplete] = useState(false)
   const [orderNumber, setOrderNumber] = useState("")
 
@@ -84,18 +85,32 @@ export default function Checkout() {
 
         // Fetch cart (authoritative)
         const cartRes = await api.get("/cart")
-        const items = Array.isArray(cartRes?.data?.cart?.items)
-          ? cartRes.data.cart.items.map((ci) => ({
-              id: ci.product?.id || ci.id,
-              name: ci.product?.name || ci.name,
-              price: Number(ci.product?.price ?? ci.price ?? 0),
-              quantity: Number(ci.quantity) || 1,
-              deliveryClass: ci.product?.shippingClass || ci.product?.class || "Standard",
-              image: ci.product?.imageUrl || ci.imageUrl || ci.image,
-              cashbackPercent: ci.product?.cashback_rate ?? ci.product?.cashbackRate ?? 0,
-            }))
-          : []
-        if (mounted) setCartItems(items)
+        const rawItems = Array.isArray(cartRes?.data?.cart?.items) ? cartRes.data.cart.items : []
+        const totals = cartRes?.data?.cart?.totals || { subtotal_excl_vat: 0, vat_amount: 0, total: 0, cashback_total: 0 }
+
+        const items = rawItems.map((ci) => ({
+          cartRowId: ci.id,
+          productId: ci.product?.id,
+          name: ci.product?.name || "",
+          unitPrice: Number(ci.unit_price || 0),
+          quantity: Number(ci.quantity) || 1,
+          lineTotal: Number(ci.line_total || 0),
+          lineCashback: Number(ci.line_cashback_amount || 0),
+          deliveryClass: ci.product?.shippingClass || ci.product?.class || "Standard",
+          image: ci.product?.imageUrl || ci.product?.image_url || ci.product?.primaryImage || "",
+          vatRate: Number(ci.product?.vat_rate ?? ci.product?.vatRate ?? 0),
+          cashbackRate: Number(ci.product?.cashback_rate ?? ci.product?.cashbackRate ?? 0),
+        }))
+
+        if (mounted) {
+          setCartItems(items)
+          setCartTotals({
+            subtotal_excl_vat: Number(totals.subtotal_excl_vat || 0),
+            vat_amount: Number(totals.vat_amount || 0),
+            total: Number(totals.total || 0),
+            cashback_total: Number(totals.cashback_total || 0),
+          })
+        }
 
         // Wallet concise balance
         try {
@@ -117,20 +132,10 @@ export default function Checkout() {
   }, [navigate])
 
   // ---------- Totals & fees ----------
-  const VAT_RATE = 0.16
-
-  // subtotal (excl VAT) derived from stored item price which we assume is VAT-inclusive
-  const subtotalExclVAT = useMemo(() => {
-    return cartItems.reduce((sum, item) => {
-      const qty = Number(item.quantity) || 1
-      const priceInc = Number(item.price) || 0
-      const priceExcl = Math.round(priceInc / (1 + VAT_RATE))
-      return sum + priceExcl * qty
-    }, 0)
-  }, [cartItems])
-
-  const vatAmount = Math.round(subtotalExclVAT * VAT_RATE)
-  const itemsTotalIncVAT = subtotalExclVAT + vatAmount
+  // Totals are provided by backend /cart (authoritative). Frontend treats them as display-only.
+  const subtotalExclVAT = Number(cartTotals.subtotal_excl_vat || 0)
+  const vatAmount = Number(cartTotals.vat_amount || 0)
+  const itemsTotalIncVAT = Number(cartTotals.total || 0)
 
   // DB-driven shipping fee via backend quote
   const [deliveryFee, setDeliveryFee] = useState(0)
@@ -140,7 +145,7 @@ export default function Checkout() {
       try {
         const res = await api.post("/shipping/quote", {
           deliveryOption,
-          items: cartItems.map((it) => ({ productId: it.id, quantity: it.quantity })),
+          items: cartItems.map((it) => ({ productId: it.productId, quantity: it.quantity })),
         })
         const fee = Number(res?.data?.totalFee || 0)
         if (mounted) setDeliveryFee(fee)
@@ -154,16 +159,7 @@ export default function Checkout() {
 
   const grandTotal = itemsTotalIncVAT + deliveryFee
 
-  // cashback (display only)
-  const totalCashback = useMemo(() => {
-    return cartItems.reduce((sum, item) => {
-      const qty = Number(item.quantity) || 1
-      const priceInc = Number(item.price) || 0
-      const priceExcl = Math.round(priceInc / (1 + VAT_RATE))
-      const cashbackPercent = Number(item.cashbackPercent ?? 0)
-      return sum + Math.round((priceExcl * qty * cashbackPercent) / 100)
-    }, 0)
-  }, [cartItems])
+  const totalCashback = Number(cartTotals.cashback_total || 0)
 
   // wallet: client-side applied amount (server enforces again)
   const walletRequested = Math.max(0, Number(walletInput) || 0)
@@ -202,10 +198,10 @@ export default function Checkout() {
   // ---------- Place order ----------
   const handlePlaceOrder = async () => {
     const payload = {
-      items: cartItems.map((it) => ({ productId: it.id, quantity: it.quantity })),
+      // Backend reads cart_items from DB; these are for compatibility only.
+      items: cartItems.map((it) => ({ productId: it.productId, quantity: it.quantity })),
       shippingAddress: deliveryOption === "delivery" ? shippingInfo?.address : null,
       walletApplied,
-      cashback_total: totalCashback, // Include calculated cashback total
     }
     try {
       const res = await api.post("/orders", payload)
@@ -413,13 +409,13 @@ export default function Checkout() {
             <Typography variant="h6" fontWeight="bold" gutterBottom>Order Summary</Typography>
 
             {cartItems.map((item) => (
-              <Box key={item.id} sx={{ display: "flex", mb: 2 }}>
+              <Box key={item.cartRowId || item.productId} sx={{ display: "flex", mb: 2 }}>
                 <Box component="img" src={item.image} alt={item.name} sx={{ width: 50, height: 50, objectFit: "contain", mr: 2 }} />
                 <Box sx={{ flex: 1 }}>
                   <Typography variant="body2" fontWeight="medium">{item.name}</Typography>
                   <Typography variant="body2" color="text.secondary">Qty: {item.quantity || 1}</Typography>
                 </Box>
-                <Typography variant="body2" fontWeight="bold">{formatNumberWithCommas((Number(item.price) || 0) * (Number(item.quantity) || 1))}/=</Typography>
+                <Typography variant="body2" fontWeight="bold">{formatNumberWithCommas(Number(item.lineTotal || 0))}/=</Typography>
               </Box>
             ))}
 
@@ -430,7 +426,7 @@ export default function Checkout() {
               <Typography>{formatNumberWithCommas(subtotalExclVAT)}/=</Typography>
             </Box>
             <Box sx={{ display: "flex", justifyContent: "space-between", mb: 1 }}>
-              <Typography>VAT (16%):</Typography>
+              <Typography>VAT:</Typography>
               <Typography>{formatNumberWithCommas(vatAmount)}/=</Typography>
             </Box>
             <Box sx={{ display: "flex", justifyContent: "space-between", mb: 1 }}>

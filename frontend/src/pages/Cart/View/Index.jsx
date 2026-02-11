@@ -26,18 +26,11 @@ import {
 import { KeyboardArrowDown, ArrowBack, KeyboardArrowUp, DeleteOutline, ExpandMore, ExpandLess } from "@mui/icons-material"
 import { useNavigate } from "react-router-dom"
 import NewsletterSubscription from "../../../components/NewsLetter"
-import { normalizeCartItem, calculateDisplayedCashback, calculateOrderSummary } from "../../../utils/cartUtils"
+import { normalizeCartItem } from "../../../utils/cartUtils"
 
 // Helper function to format numbers with commas
 const formatNumberWithCommas = (number) => {
   return number.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")
-}
-
-// Define pricing tiers
-const PRICING_TIERS = {
-  TIER1: { min: 1, max: 3, adjustment: 1 }, // 1-3 pieces: base price
-  TIER2: { min: 4, max: 11, adjustment: 0.95 }, // 4-11 pieces: 5% lower
-  TIER3: { min: 12, max: Number.POSITIVE_INFINITY, adjustment: 0.9 }, // 12+ pieces: 10% lower
 }
 
 export default function Cart() {
@@ -45,6 +38,7 @@ export default function Cart() {
 
   // State for cart items
   const [cartItems, setCartItems] = useState([])
+  const [cartTotals, setCartTotals] = useState({ subtotalExclVAT: 0, vatAmount: 0, total: 0, totalCashback: 0 })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [expandedItems, setExpandedItems] = useState({})
@@ -59,11 +53,24 @@ export default function Cart() {
         
         const res = await api.get("/cart")
         const rows = res?.data?.cart?.items || []
+        const totals = res?.data?.cart?.totals || null
         
         if (mounted) {
           // Normalize cart items using our utility
           const normalizedItems = rows.map(normalizeCartItem)
           setCartItems(normalizedItems)
+
+          // Server-calculated totals (authoritative)
+          if (totals) {
+            setCartTotals({
+              subtotalExclVAT: Number(totals.subtotal_excl_vat || 0),
+              vatAmount: Number(totals.vat_amount || 0),
+              total: Number(totals.total || 0),
+              totalCashback: Number(totals.cashback_total || 0),
+            })
+          } else {
+            setCartTotals({ subtotalExclVAT: 0, vatAmount: 0, total: 0, totalCashback: 0 })
+          }
           
           // Log any missing fields for debugging
           normalizedItems.forEach((item, index) => {
@@ -73,9 +80,6 @@ export default function Cart() {
             if (!item.primaryImage || item.primaryImage.includes('placeholder')) {
               console.warn(`[Cart] Item ${index} missing primaryImage:`, item)
             }
-            if (!item.cashbackPercent) {
-              console.warn(`[Cart] Item ${index} missing cashbackPercent:`, item)
-            }
           })
         }
       } catch (err) {
@@ -83,6 +87,7 @@ export default function Cart() {
         if (mounted) {
           setError("Failed to load cart items. Please try again.")
           setCartItems([])
+          setCartTotals({ subtotalExclVAT: 0, vatAmount: 0, total: 0, totalCashback: 0 })
         }
       } finally {
         if (mounted) setLoading(false)
@@ -117,34 +122,25 @@ export default function Cart() {
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"))
   const isTablet = useMediaQuery(theme.breakpoints.between("sm", "lg"))
 
-  // Function to get the price tier based on quantity
-  const getPriceTier = (quantity) => {
-    if (quantity >= PRICING_TIERS.TIER3.min) return PRICING_TIERS.TIER3
-    if (quantity >= PRICING_TIERS.TIER2.min) return PRICING_TIERS.TIER2
-    return PRICING_TIERS.TIER1
-  }
-
-  // Function to get the adjusted price based on quantity
-  const getAdjustedPrice = (item, quantity) => {
-    const tier = getPriceTier(quantity)
-    const basePrice = item.basePrice || item.price
-    return Math.round(basePrice * tier.adjustment)
-  }
-
-  // Function to get the tier label
-  const getTierLabel = (quantity) => {
-    if (quantity >= PRICING_TIERS.TIER3.min) return "12+ PC"
-    if (quantity >= PRICING_TIERS.TIER2.min) return "4-11 PC"
-    return "1-3 PC"
-  }
-
   // New handlers for increasing and decreasing quantity
   const increaseQuantity = async (cartRowId) => {
     const newQty = (quantities[cartRowId] || 1) + 1
     try {
       await api.put(`/cart/${cartRowId}`, { quantity: newQty })
-      setQuantities({ ...quantities, [cartRowId]: newQty })
-      setCartItems((prev) => prev.map((it) => (it.id === cartRowId ? { ...it, quantity: newQty } : it)))
+      // Re-fetch cart to reflect backend-calculated tier price, VAT, cashback, and totals
+      const res = await api.get("/cart")
+      const rows = res?.data?.cart?.items || []
+      const totals = res?.data?.cart?.totals || null
+      const normalizedItems = rows.map(normalizeCartItem)
+      setCartItems(normalizedItems)
+      if (totals) {
+        setCartTotals({
+          subtotalExclVAT: Number(totals.subtotal_excl_vat || 0),
+          vatAmount: Number(totals.vat_amount || 0),
+          total: Number(totals.total || 0),
+          totalCashback: Number(totals.cashback_total || 0),
+        })
+      }
     } catch (_) {}
   }
 
@@ -154,8 +150,20 @@ export default function Cart() {
     const newQty = current - 1
     try {
       await api.put(`/cart/${cartRowId}`, { quantity: newQty })
-      setQuantities({ ...quantities, [cartRowId]: newQty })
-      setCartItems((prev) => prev.map((it) => (it.id === cartRowId ? { ...it, quantity: newQty } : it)))
+      // Re-fetch cart to reflect backend-calculated tier price, VAT, cashback, and totals
+      const res = await api.get("/cart")
+      const rows = res?.data?.cart?.items || []
+      const totals = res?.data?.cart?.totals || null
+      const normalizedItems = rows.map(normalizeCartItem)
+      setCartItems(normalizedItems)
+      if (totals) {
+        setCartTotals({
+          subtotalExclVAT: Number(totals.subtotal_excl_vat || 0),
+          vatAmount: Number(totals.vat_amount || 0),
+          total: Number(totals.total || 0),
+          totalCashback: Number(totals.cashback_total || 0),
+        })
+      }
     } catch (_) {}
   }
 
@@ -163,22 +171,34 @@ export default function Cart() {
   const removeItem = async (cartRowId) => {
     try {
       await api.delete(`/cart/${cartRowId}`)
-      const updatedCartItems = cartItems.filter((item) => item.id !== cartRowId)
-    setCartItems(updatedCartItems)
+      const res = await api.get("/cart")
+      const rows = res?.data?.cart?.items || []
+      const totals = res?.data?.cart?.totals || null
+      const normalizedItems = rows.map(normalizeCartItem)
+      setCartItems(normalizedItems)
+      if (totals) {
+        setCartTotals({
+          subtotalExclVAT: Number(totals.subtotal_excl_vat || 0),
+          vatAmount: Number(totals.vat_amount || 0),
+          total: Number(totals.total || 0),
+          totalCashback: Number(totals.cashback_total || 0),
+        })
+      }
     } catch (_) {}
   }
 
-  // Calculate order summary using utility functions
-  const orderSummary = calculateOrderSummary(cartItems)
-  const { subtotalExclVAT, vatAmount, total, totalCashback } = orderSummary
+  // Totals are provided by backend /cart (authoritative)
+  const { subtotalExclVAT, vatAmount, total, totalCashback } = cartTotals
 
   // Clear cart function
   const clearCart = async () => {
     try {
       await api.delete("/cart")
       setCartItems([])
+      setCartTotals({ subtotalExclVAT: 0, vatAmount: 0, total: 0, totalCashback: 0 })
     } catch (_) {
     setCartItems([])
+    setCartTotals({ subtotalExclVAT: 0, vatAmount: 0, total: 0, totalCashback: 0 })
     }
   }
 
@@ -242,8 +262,6 @@ export default function Cart() {
               <Box>
                 {cartItems.map((item) => {
                   const quantity = quantities[item.id] || 1
-                  const adjustedPrice = getAdjustedPrice(item, quantity)
-                  const tierLabel = getTierLabel(quantity)
                   const isExpanded = expandedItems[item.id]
 
                   return (
@@ -352,7 +370,7 @@ export default function Cart() {
 
                         <Grid item xs={6}>
                           <Typography variant="body1" fontWeight="bold" align="right" sx={{ fontSize: "1.1rem" }}>
-                            {formatNumberWithCommas(adjustedPrice)}/=
+                            {formatNumberWithCommas(Number(item.unitPrice || item.price || 0))}/=
                           </Typography>
                           <Typography variant="body2" color="text.secondary" align="right">
                             per item
@@ -361,13 +379,13 @@ export default function Cart() {
 
                         <Grid item xs={6}>
                           <Typography variant="body2" color="success.main" sx={{ fontSize: "0.95rem" }}>
-                            Cashback: {formatNumberWithCommas(calculateDisplayedCashback(item, quantity))}/=
+                            Cashback: {formatNumberWithCommas(Number(item.lineCashbackAmount || 0))}/=
                           </Typography>
                         </Grid>
 
                         <Grid item xs={6}>
                           <Typography variant="body1" fontWeight="bold" align="right" sx={{ fontSize: "1.1rem" }}>
-                            Total: {formatNumberWithCommas(adjustedPrice * quantity)}/=
+                            Total: {formatNumberWithCommas(Number(item.lineTotal || 0))}/=
                           </Typography>
                         </Grid>
 
@@ -414,7 +432,6 @@ export default function Cart() {
                   <TableBody>
                     {cartItems.map((item) => {
                       const quantity = quantities[item.id] || 1
-                      const adjustedPrice = getAdjustedPrice(item, quantity)
 
                       return (
                         <TableRow key={item.id}>
@@ -508,13 +525,13 @@ export default function Cart() {
                           </TableCell>
                           {/* Price with /= and commas */}
                           <TableCell align="right" sx={{ fontSize: "1rem" }}>
-                            {formatNumberWithCommas(adjustedPrice)}/=
+                            {formatNumberWithCommas(Number(item.unitPrice || item.price || 0))}/=
                           </TableCell>
                           <TableCell align="right" sx={{ fontWeight: "bold", fontSize: "1rem" }}>
-                            {formatNumberWithCommas(adjustedPrice * quantity)}/=
+                            {formatNumberWithCommas(Number(item.lineTotal || 0))}/=
                           </TableCell>
                           <TableCell align="right" sx={{ color: "success.main", fontSize: "1rem" }}>
-                            {formatNumberWithCommas(calculateDisplayedCashback(item, quantity))}/=
+                            {formatNumberWithCommas(Number(item.lineCashbackAmount || 0))}/=
                           </TableCell>
                           <TableCell align="center">
                             <Stack direction="row" spacing={1} justifyContent="center">
@@ -638,7 +655,7 @@ export default function Cart() {
 
               <Box sx={{ display: "flex", justifyContent: "space-between" }}>
                 <Typography variant="body1" sx={{ fontSize: "1.05rem" }}>
-                  VAT (16%):
+                  VAT:
                 </Typography>
                 <Typography variant="body1" color="primary" sx={{ fontSize: "1.05rem" }}>
                   + {formatNumberWithCommas(vatAmount)}/=
@@ -665,14 +682,6 @@ export default function Cart() {
               disabled={cartItems.length === 0}
               type="button"
               onClick={() => {
-                // Store order summary in sessionStorage for checkout page
-                sessionStorage.setItem('orderSummary', JSON.stringify({
-                  subtotalExclVAT,
-                  vatAmount,
-                  total,
-                  totalCashback,
-                  itemCount: cartItems.length
-                }))
                 navigate("/checkout")
               }}
               sx={{
