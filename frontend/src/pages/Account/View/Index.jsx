@@ -84,7 +84,7 @@ const AccountPage = () => {
     last_name: "",
     email: "",
     phone_number: "",
-    avatar_url: null,
+    imageUrl: null,
     date_joined: "",
     last_login: "",
     email_verified: true,
@@ -179,9 +179,7 @@ const AccountPage = () => {
           last_name: profile.last_name || "",
           email: profile.email || "",
           phone_number: profile.phone_number || "",
-          avatar_url: profile.avatar_url
-            ? `${import.meta.env.VITE_API_URL || "http://localhost:3000"}/uploads/${profile.avatar_url}`
-            : null,
+          imageUrl:response.data.data.imageUrl, // use Cloudinary URL directly
           date_joined: profile.created_at || "",
           last_login: profile.last_login || "",
           email_verified: profile.email_verified || false,
@@ -270,7 +268,7 @@ const AccountPage = () => {
     const { name, value } = e.target
     setUserData((prev) => ({
       ...prev,
-      [name]: value,
+     imageUrl: response.data.data.imageUrl, // use Cloudinary URL directly
     }))
   }
 
@@ -289,6 +287,46 @@ const AccountPage = () => {
     }))
   }
 
+const handle_profile_picture_change = async (e) => {
+  if (e.target.files && e.target.files[0]) {
+    const file = e.target.files[0]
+
+    // Validate file
+    if (file.size > 5 * 1024 * 1024) {
+      show_notification("File size must be less than 5MB", "error")
+      return
+    }
+    if (!file.type.startsWith("image/")) {
+      show_notification("Please select a valid image file", "error")
+      return
+    }
+
+    try {
+      setUploadingAvatar(true)
+
+      // 1️⃣ Upload to Cloudinary
+      const response = await uploadAPI.uploadFile(file, "profile")
+      const imageUrl = response.data?.imageUrl || response.data?.avatar_url
+      if (!imageUrl) throw new Error("No image URL returned from server")
+
+      // 2️⃣ Save URL to backend
+      await usersAPI.updateProfile({ avatar_url: imageUrl })
+
+      // 3️⃣ Update local state
+      setUserData((prev) => ({ ...prev, imageUrl }))
+      setProfilePictureDialog(false)
+      show_notification("Profile picture updated successfully!")
+    } catch (error) {
+      console.error("Error uploading avatar:", error)
+      show_notification("Failed to upload profile picture", "error")
+    } finally {
+      setUploadingAvatar(false)
+    }
+  }
+}
+
+
+  /*
   const handle_profile_picture_change = async (e) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0]
@@ -307,12 +345,12 @@ const AccountPage = () => {
 
       try {
         setUploadingAvatar(true)
-        const response = await uploadAPI.uploadFile(file, "profiles")
+        const response = await uploadAPI.uploadFile(file, "profile")
 
         if (response.data.success) {
           setUserData((prev) => ({
             ...prev,
-            avatar_url: `${import.meta.env.VITE_API_URL || "http://localhost:3000"}/uploads/${response.data.data.avatar_url}`,
+            imageUrl: `${import.meta.env.VITE_API_URL || "http://localhost:3000"}/uploads/${response.data.data.imageUrl}`,
           }))
           setProfilePictureDialog(false)
           show_notification("Profile picture updated successfully!")
@@ -324,7 +362,7 @@ const AccountPage = () => {
         setUploadingAvatar(false)
       }
     }
-  }
+  }*/
 
   const handle_remove_profile_picture = async () => {
     try {
@@ -333,7 +371,7 @@ const AccountPage = () => {
       if (response.data.success) {
         setUserData((prev) => ({
           ...prev,
-          avatar_url: null,
+          imageUrl: null,
         }))
         setRemoveProfileDialog(false)
         show_notification("Profile picture removed successfully!")
@@ -565,10 +603,10 @@ const AccountPage = () => {
         <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 3 }}>
           <Box sx={{ display: "flex", alignItems: "center" }}>
             <Avatar
-              src={user_data.avatar_url}
+              src={user_data.imageUrl}
               sx={{ width: 80, height: 80, mr: 2, bgcolor: theme.palette.primary.main }}
             >
-              {!user_data.avatar_url && <Person fontSize="large" />}
+              {!user_data.imageUrl && <Person fontSize="large" />}
             </Avatar>
             <Box>
               <Typography variant="h5" component="h1" gutterBottom>
@@ -654,7 +692,7 @@ const AccountPage = () => {
                 {/* Profile Picture Section */}
                 <Box sx={{ mb: 3, position: "relative", textAlign: "center" }}>
                   <Avatar
-                    src={user_data.avatar_url}
+                    src={user_data.imageUrl}
                     sx={{
                       width: 120,
                       height: 120,
@@ -663,7 +701,7 @@ const AccountPage = () => {
                       bgcolor: theme.palette.primary.main,
                     }}
                   >
-                    {!user_data.avatar_url && <Person fontSize="large" />}
+                    {!user_data.imageUrl && <Person fontSize="large" />}
                   </Avatar>
 
                   {edit_mode && (
@@ -679,7 +717,7 @@ const AccountPage = () => {
                         {uploading_avatar ? "Uploading..." : "Change Photo"}
                       </Button>
 
-                      {user_data.avatar_url && (
+                      {user_data.imageUrl && (
                         <Button
                           variant="outlined"
                           color="error"

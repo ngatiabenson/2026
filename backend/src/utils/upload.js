@@ -1,3 +1,99 @@
+/*cloudinary production images upload*/
+import express from "express";
+import { upload, getImageUrl } from "../utils/uploads.js";
+import { authenticateToken, requireRole } from "../middleware/auth.js";
+import { query } from "../utils/database.js";
+import { v2 as cloudinary } from "cloudinary";
+
+const router = express.Router();
+
+// ===============================
+// UPLOAD IMAGE (GENERIC)
+// Supports type: profile | products | category
+// ===============================
+router.post("/image", authenticateToken, upload.single("image"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "No image uploaded" });
+
+    const type = req.body.type;
+    const imageUrl = getImageUrl(req.file);
+
+    // If profile, automatically update user record
+    if (type === "profile" && req.user?.id) {
+      await query(
+        "UPDATE users SET profile_image = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+        [imageUrl, req.user.id]
+      );
+    }
+
+    res.json({ success: true, imageUrl, message: "Upload successful" });
+  } catch (error) {
+    console.error("Generic image upload error:", error);
+    res.status(500).json({ success: false, error: "Upload failed" });
+  }
+});
+
+// ===============================
+// UPLOAD / UPDATE PROFILE IMAGE
+// Convenience endpoint
+// ===============================
+router.post("/profile-image", authenticateToken, upload.single("image"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "No image uploaded" });
+
+    const userId = req.user.id;
+    const imageUrl = getImageUrl(req.file);
+
+    await query(
+      "UPDATE users SET profile_image = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+      [imageUrl, userId]
+    );
+
+    res.json({ success: true, imageUrl, message: "Profile image uploaded successfully" });
+  } catch (error) {
+    console.error("Profile image upload error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ===============================
+// DELETE PROFILE IMAGE
+// ===============================
+router.delete("/profile-picture", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // Get current profile image
+    const userResult = await query("SELECT profile_image FROM users WHERE id = $1", [userId]);
+    if (!userResult.rows.length) return res.status(404).json({ error: "User not found" });
+
+    const currentImage = userResult.rows[0].profile_image;
+
+    // Remove from DB
+    await query("UPDATE users SET profile_image = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1", [userId]);
+
+    // Delete from Cloudinary
+    if (currentImage) {
+      try {
+        const publicId = currentImage.split("/upload/")[1].split(".")[0];
+        await cloudinary.uploader.destroy(publicId);
+      } catch (cloudErr) {
+        console.warn("Cloudinary deletion failed:", cloudErr.message);
+      }
+    }
+
+    res.json({ success: true, message: "Profile picture removed successfully" });
+  } catch (error) {
+    console.error("Profile picture deletion error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+export default router;
+
+
+/*  
+/static upload images
 import multer from "multer"
 import path from "path"
 import fs from "fs"
@@ -99,3 +195,4 @@ export function generateUniqueFilename(originalName, prefix = "") {
 
   return `${prefix}${prefix ? "-" : ""}${baseName}-${timestamp}-${randomSuffix}${fileExtension}`
 }
+*/

@@ -16,12 +16,13 @@ router.get("/profile", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id
 
-    const result = await query(
-      `SELECT id, name, email, phone, role, is_active, is_verified, created_at, updated_at, last_login,
-              profile_image as avatar_url
-       FROM users WHERE id = $1 AND deleted_at IS NULL`,
-      [userId],
-    )
+  const result = await query(
+  `SELECT id, name, email, phone, role, is_active, is_verified, created_at, updated_at, last_login,
+          profile_image AS "imageUrl"
+   FROM users WHERE id = $1 AND deleted_at IS NULL`,
+  [userId]
+)
+
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: "User not found" })
@@ -49,7 +50,8 @@ router.get("/profile", authenticateToken, async (req, res) => {
 })
 
 // PUT /api/users/profile - Update current user's profile
-router.put("/profile", authenticateToken, async (req, res) => {
+/*
+/router.put("/profile", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id
     const { first_name, last_name, name, phone, phone_number } = req.body
@@ -87,6 +89,66 @@ router.put("/profile", authenticateToken, async (req, res) => {
       userId,
       "profile_updated",
       { name: fullName, phone: phoneValue },
+      getClientIP(req),
+      req.get("User-Agent")
+    )
+
+    res.json({
+      success: true,
+      data: profileData,
+      message: "Profile updated successfully",
+    })
+  } catch (error) {
+    console.error("Profile update error:", error)
+    res.status(500).json({ error: "Internal server error" })
+  }
+})
+*/
+router.put("/profile", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id
+    const { first_name, last_name, name, phone, phone_number, avatar_url } = req.body
+
+    // Combine first_name + last_name if provided
+    let fullName = first_name && last_name ? `${first_name} ${last_name}` : name
+
+    // Only validate name if user is trying to update it
+    if ((name || first_name || last_name) && !fullName) {
+      return res.status(400).json({ error: "Name is required" })
+    }
+
+    const phoneValue = phone_number || phone
+
+    const result = await query(
+      `UPDATE users 
+       SET 
+         name = COALESCE($1, name), 
+         phone = COALESCE($2, phone),
+         profile_image = COALESCE($3, profile_image),
+         updated_at = CURRENT_TIMESTAMP
+       WHERE id = $4 AND deleted_at IS NULL
+       RETURNING id, name, email, phone, profile_image as imageUrl, role, updated_at`,
+      [fullName || null, phoneValue || null, avatar_url || null, userId]
+    )
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "User not found" })
+    }
+
+    const user = result.rows[0]
+
+    const nameParts = user.name ? user.name.split(" ") : ["", ""]
+    const profileData = {
+      ...user,
+      first_name: nameParts[0] || "",
+      last_name: nameParts.slice(1).join(" ") || "",
+      phone_number: user.phone,
+    }
+
+    await logUserAction(
+      userId,
+      "profile_updated",
+      { name: fullName, phone: phoneValue, avatar_url },
       getClientIP(req),
       req.get("User-Agent")
     )

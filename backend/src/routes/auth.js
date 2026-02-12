@@ -159,7 +159,7 @@ router.post("/login", async (req, res) => {
         email: user.email,
         role: user.role,
         name: user.name,
-        avatar_url: null,
+        imageUrl: null,
       },
     })
   } catch (error) {
@@ -585,7 +585,7 @@ router.get("/profile", authenticateToken, async (req, res) => {
         created_at: row.created_at,
         last_login: row.last_login,
         profile_image: absoluteImageUrl(req, row.profile_image || null),
-        avatar_url: absoluteImageUrl(req, row.profile_image || null),
+        imageUrl: absoluteImageUrl(req, row.profile_image || null),
       },
     })
   } catch (error) {

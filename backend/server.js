@@ -16,7 +16,7 @@ dotenv.config({ path: envFile });
 console.log(`🌍 Loaded environment from: ${envFile}`);
 
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+//const __dirname = path.dirname(__filename);
 
 const app = express();
 
@@ -37,7 +37,7 @@ app.get("/", (req, res) => {
 });
 
 // ✅ Serve static files
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+//app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // ✅ Import and mount all routes
 import authRoutes from "./src/routes/auth.js";

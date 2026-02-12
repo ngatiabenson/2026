@@ -1,3 +1,146 @@
+/*cloudinary uploads.*/
+
+import express from "express";
+import multer from "multer";
+import { v2 as cloudinary } from "cloudinary";
+import { CloudinaryStorage } from "multer-storage-cloudinary";
+import { query } from "../utils/database.js";
+import { authenticateToken, requireRole } from "../middleware/auth.js";
+
+const router = express.Router();
+
+// Cloudinary config
+cloudinary.config({ secure: true });
+
+// Configure Cloudinary storage
+const storage = new CloudinaryStorage({
+  cloudinary,
+  params: async (req, file) => {
+    let folder = "marketplace/products";
+    if (req.body.type === "profile" || req.path.includes("profile")) {
+      folder = "marketplace/profiles";
+    }
+    return {
+      folder,
+      allowed_formats: ["jpg", "jpeg", "png", "webp", "gif"],
+      transformation: [
+        { width: 1000, height: 1000, crop: "limit" },
+        { quality: "auto" },
+        { fetch_format: "auto" },
+      ],
+    };
+  },
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
+
+// ===============================
+// SINGLE PRODUCT IMAGE
+// ===============================
+router.post("/product-image", requireRole(["admin"]), upload.single("image"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "No image uploaded" });
+    res.json({ success: true, imageUrl: req.file.path, message: "Product image uploaded successfully" });
+  } catch (error) {
+    console.error("Product image upload error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ===============================
+// PROFILE IMAGE UPLOAD/UPDATE
+// ===============================
+router.post("/profile-image", authenticateToken, upload.single("image"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "No image uploaded" });
+
+    const imageUrl = req.file.path;
+    const userId = req.user.id;
+
+    // Update user's profile image
+    await query(
+      "UPDATE users SET profile_image = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+      [imageUrl, userId]
+    );
+
+    res.json({
+      success: true,
+      imageUrl,
+      message: "Profile image uploaded successfully",
+    });
+  } catch (error) {
+    console.error("Profile image upload error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ===============================
+// REMOVE PROFILE IMAGE
+// ===============================
+router.delete("/profile-picture", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // Get current profile image
+    const userResult = await query("SELECT profile_image FROM users WHERE id = $1", [userId]);
+    if (!userResult.rows.length) return res.status(404).json({ error: "User not found" });
+
+    const currentImage = userResult.rows[0].profile_image;
+
+    // Remove profile image from DB
+    await query("UPDATE users SET profile_image = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1", [userId]);
+
+    // Delete from Cloudinary
+    if (currentImage) {
+      const publicId = currentImage.split("/upload/")[1].split(".")[0];
+      await cloudinary.uploader.destroy(publicId);
+    }
+
+    res.json({ success: true, message: "Profile picture removed successfully" });
+  } catch (error) {
+    console.error("Profile picture removal error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ===============================
+// GENERIC UPLOAD FOR FRONTEND /api/upload/image
+// Supports type=profile or type=product
+// ===============================
+router.post("/image", authenticateToken, upload.single("image"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "No image uploaded" });
+
+    const imageUrl = req.file.path;
+    const type = req.body.type;
+    const userId = req.user?.id;
+
+    // If it's a profile image, update DB automatically
+    if (type === "profile" && userId) {
+      await query(
+        "UPDATE users SET profile_image = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+        [imageUrl, userId]
+      );
+    }
+
+    res.json({ success: true, imageUrl, message: "Upload successful" });
+  } catch (error) {
+    console.error("Generic upload error:", error);
+    res.status(500).json({ success: false, error: "Upload failed" });
+  }
+});
+
+export default router;
+
+
+
+
+/*
+/old static local uploads
+
 import express from "express"
 import multer from "multer"
 import path from "path"
@@ -371,3 +514,4 @@ router.post("/image/:type", upload.single("image"), async (req, res) => {
     res.status(500).json({ success: false, error: "Upload failed" })
   }
 })
+*/
