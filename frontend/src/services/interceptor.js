@@ -57,7 +57,7 @@ api.interceptors.response.use(
     // Handle rate limiting
     if (error.response?.status === 429) {
       console.warn("Rate limit exceeded, waiting before retry...")
-      await new Promise((resolve) => setTimeout(resolve, 40000))
+      await new Promise((resolve) => setTimeout(resolve, 200000))
       return api(originalRequest)
     }
 
